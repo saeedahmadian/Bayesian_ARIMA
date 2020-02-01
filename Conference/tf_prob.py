@@ -136,59 +136,97 @@ def determinstic_model2(x_data,y_data,batch_size=10):
 # output2 = determinstic_model2(x,np.array(y).reshape(-1,1),10)
 
 
+
+import tensorflow.compat.v1 as tf
+mygraph=tf.Graph()
+
+
 def linear_regression(features):
-  D = features.shape[1]      #number of dimensions
-  coeffs = ed.Normal(        #normal prior on weights
-      loc=tf.zeros([D,1],dtype=tf.float32),
-      scale=tf.ones([D,1],dtype=tf.float32),
-      name="coeffs")
-  bias = ed.Normal(          #normal prior on bias
-      loc=tf.zeros([1],dtype=tf.float32),
-      scale=tf.ones([1],dtype=tf.float32),
-      name="bias")
-  noise_std = ed.HalfNormal( #half-normal prior on noise std
-      scale=tf.ones([1],dtype=tf.float32),
-      name="noise_std")
-  predictions = ed.Normal(   #normally-distributed noise
-      loc=tf.matmul(features, coeffs)+bias,
-      scale=noise_std,
-      name="predictions")
-  return predictions
+    D = features.shape[1]  # number of dimensions
+    coeffs = ed.Normal(  # normal prior on weights
+        loc=tf.zeros([D, 1], dtype=tf.float32),
+        scale=10*tf.ones([D, 1], dtype=tf.float32),
+        name="coeffs")
+    bias = ed.Normal(  # normal prior on bias
+        loc=tf.zeros([1], dtype=tf.float32),
+        scale=10*tf.ones([1], dtype=tf.float32),
+        name="bias")
+    noise_std = ed.HalfNormal(  # half-normal prior on noise std
+        scale=10*tf.ones([1], dtype=tf.float32),
+        name="noise_std")
+    predictions = ed.Normal(  # normally-distributed noise
+        loc=tf.matmul(features, coeffs) + bias,
+        scale=noise_std,
+        name="predictions")
+    return predictions
+
+def linear_regression2(features):
+    D = features.shape[1]  # number of dimensions
+    factor_coeff_loc= ed.Normal(loc=tf.zeros([D, 1], dtype=tf.float32),
+                                  scale=10*tf.ones([D, 1], dtype=tf.float32),
+                                  name='factor_coeff_loc')
+    factor_coeff_scale= ed.HalfNormal(
+                                   scale=10 * tf.ones([D, 1], dtype=tf.float32),
+                                   name='factor_coeff_scale')
+
+    coeffs = ed.Normal(  # normal prior on weights
+        loc=factor_coeff_loc,
+        scale=factor_coeff_scale,
+        name="coeffs")
+    bias = ed.Normal(  # normal prior on bias
+        loc=tf.zeros([1], dtype=tf.float32),
+        scale=tf.ones([1], dtype=tf.float32),
+        name="bias")
+    noise_std = ed.HalfNormal(  # half-normal prior on noise std
+        scale=tf.ones([1], dtype=tf.float32),
+        name="noise_std")
+    predictions = ed.Normal(  # normally-distributed noise
+        loc=tf.matmul(features, coeffs) + bias,
+        scale=noise_std,
+        name="predictions")
+    return predictions
 
 # Joint posterior distribution
 log_joint = ed.make_log_joint_fn(linear_regression)
 
+
 # Function to compute the log posterior probability
+# def target_log_prob_fn(factor_coeff_loc,factor_coeff_scale,coeffs, bias, noise_std):
+#     return log_joint(
+#         features=tf.convert_to_tensor(x, dtype=tf.float32),
+#         factor_coeff_loc=factor_coeff_loc,
+#         factor_coeff_scale=factor_coeff_scale,
+#         coeffs=coeffs,
+#         bias=bias,
+#         noise_std=noise_std,
+#         predictions=tf.reshape(tf.convert_to_tensor(y, dtype=tf.float32), [y.shape[0], 1]))
+
 def target_log_prob_fn(coeffs, bias, noise_std):
-  return log_joint(
-      features=tf.convert_to_tensor(x,dtype=tf.float32),
-      coeffs=coeffs,
-      bias=bias,
-      noise_std=noise_std,
-      predictions=tf.reshape(tf.convert_to_tensor(y,dtype=tf.float32),[y.shape[0],1]))
-
-
+    return log_joint(
+        features=tf.convert_to_tensor(x, dtype=tf.float32),
+        coeffs=coeffs,
+        bias=bias,
+        noise_std=noise_std,
+        predictions=tf.reshape(tf.convert_to_tensor(y, dtype=tf.float32), [y.shape[0], 1]))
 class Timer:
-  def __enter__(self):
-    self.t0 = time.time()
-  def __exit__(self, *args):
-    print('Elapsed time: %0.2fs' % (time.time()-self.t0))
+    def __enter__(self):
+        self.t0 = time.time()
+
+    def __exit__(self, *args):
+        print('Elapsed time: %0.2fs' % (time.time() - self.t0))
 
 
 # HMC Settings
-num_results = int(10e3) #number of hmc iterations
-n_burnin = int(5e3)     #number of burn-in steps
+num_results = int(500)  # number of hmc iterations
+n_burnin = int(250)  # number of burn-in steps
 step_size = 0.01
 num_leapfrog_steps = 10
 
-
 D = x.shape[1]
 # Parameter sizes
-coeffs_size = [D,1]
+coeffs_size = [D, 1]
 bias_size = [1]
 noise_std_size = [1]
-
-
 # HMC transition kernel
 kernel = tfp.mcmc.HamiltonianMonteCarlo(
     target_log_prob_fn=target_log_prob_fn,
@@ -201,50 +239,49 @@ states, kernel_results = tfp.mcmc.sample_chain(
     num_burnin_steps=n_burnin,
     kernel=kernel,
     current_state=[
-        tf.zeros(coeffs_size, name='init_coeffs',dtype=tf.float32),
-        tf.zeros(bias_size, name='init_bias',dtype=tf.float32),
-        tf.ones(noise_std_size, name='init_noise_std',dtype=tf.float32),
+
+        tf.zeros(coeffs_size, name='init_coeffs', dtype=tf.float32),
+        tf.zeros(bias_size, name='init_bias', dtype=tf.float32),
+        tf.ones(noise_std_size, name='init_noise_std', dtype=tf.float32),
     ])
 coeffs, bias, noise_std = states
-
-
-with Timer(), tf.Session() as sess:
-  [
-      coeffs_,
-      bias_,
-      noise_std_,
-      is_accepted_,
-  ] = sess.run([
-      coeffs,
-      bias,
-      noise_std,
-      kernel_results.is_accepted,
-  ])
+# with Timer(), tf.Session(mygraph) as sess:
+#     [
+#         coeffs_,
+#         bias_,
+#         noise_std_,
+#         is_accepted_,
+#     ] = sess.run([
+#         coeffs,
+#         bias,
+#         noise_std,
+#         kernel_results.is_accepted,
+#     ])
 
 # Samples after burn-in
-coeffs_samples = coeffs_[n_burnin:,:,0]
-bias_samples = bias_[n_burnin:]
-noise_std_samples = noise_std_[n_burnin:]
-accepted_samples = is_accepted_[n_burnin:]
+coeffs_samples = coeffs[n_burnin:, :, 0]
+bias_samples = bias[n_burnin:]
+noise_std_samples = noise_std[n_burnin:]
+accepted_samples = kernel_results.is_accepted[n_burnin:]
 
 
 def chain_plot(data, title='', ax=None):
     '''Plot both chain and posterior distribution'''
     if ax is None:
         ax = plt.gca()
-    ax.plot(data)
-    ax.title.set_text(title + " chain")
+    ax.plot(data,'g')
+    ax.title.set_text(title + " HMCMC chain")
 
 
 def post_plot(data, title='', ax=None, true=None, prc=95):
     '''Plot the posterior distribution given MCMC samples'''
     if ax is None:
         ax = plt.gca()
-    sns.kdeplot(data, ax=ax, shade=True)
+    sns.kdeplot(data,shade=True, color="r", ax=ax)
     tprc = (100 - prc) / 2
-    ax.axvline(x=np.percentile(data, tprc), linestyle='--')
-    ax.axvline(x=np.percentile(data, 100 - tprc), linestyle='--')
-    ax.title.set_text(title + " distribution")
+    ax.axvline(x=np.percentile(data, tprc), c= 'm',linestyle='-.')
+    ax.axvline(x=np.percentile(data, 100 - tprc), c= 'm',linestyle='-.')
+    ax.title.set_text(title + " frequency density")
     if true is not None:
         ax.axvline(x=true)
 
@@ -254,25 +291,35 @@ def chain_post_plot(data, title='', ax=None, true=None):
     chain_plot(data, title=title, ax=ax[0])
     post_plot(data, title=title, ax=ax[1], true=true)
 
-
+w_true=[.2,.2]
+b_true=.05
+noise_std_true=1
 # Plot chains and distributions for coefficients
 fig, axes = plt.subplots(D + 2, 2, sharex='col', sharey='col')
 fig.set_size_inches(6.4, 8)
+w_names=['demand coeff','DA price coeff']
 for i in range(D):
-    chain_post_plot(coeffs_samples[:, i],
-                    title="x[{}]".format(i),
+    chain_post_plot(coeffs_samples[:, i].numpy(),
+                    title=w_names[i],
                     ax=axes[i], true=w_true[i])
 
 # Plot chains and distributions for bias
-chain_post_plot(bias_samples[:, 0],
-                title="Bias",
+chain_post_plot(bias_samples[:, 0].numpy(),
+                title="ARIMA Bias",
                 ax=axes[D], true=b_true)
 
 # Plot chains and distributions for noise std dev
-chain_post_plot(noise_std_samples[:, 0],
-                title="Noise std",
+chain_post_plot(noise_std_samples[:, 0].numpy(),
+                title="ARIMA variance std",
                 ax=axes[D + 1], true=noise_std_true)
 
 axes[D + 1][1].set_xlabel("Parameter value")
 fig.tight_layout()
 plt.show()
+
+a=1
+
+
+
+
+
