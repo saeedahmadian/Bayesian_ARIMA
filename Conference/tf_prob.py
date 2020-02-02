@@ -136,11 +136,6 @@ def determinstic_model2(x_data,y_data,batch_size=10):
 # output2 = determinstic_model2(x,np.array(y).reshape(-1,1),10)
 
 
-
-import tensorflow.compat.v1 as tf
-mygraph=tf.Graph()
-
-
 def linear_regression(features):
     D = features.shape[1]  # number of dimensions
     coeffs = ed.Normal(  # normal prior on weights
@@ -165,13 +160,13 @@ def linear_regression2(features):
     factor_coeff_loc= ed.Normal(loc=tf.zeros([D, 1], dtype=tf.float32),
                                   scale=10*tf.ones([D, 1], dtype=tf.float32),
                                   name='factor_coeff_loc')
-    factor_coeff_scale= ed.HalfNormal(
+    factor_coeff_scale= ed.Normal( loc=tf.ones([D, 1], dtype=tf.float32),
                                    scale=10 * tf.ones([D, 1], dtype=tf.float32),
                                    name='factor_coeff_scale')
 
     coeffs = ed.Normal(  # normal prior on weights
         loc=factor_coeff_loc,
-        scale=factor_coeff_scale,
+        scale=tf.nn.softplus(factor_coeff_scale),
         name="coeffs")
     bias = ed.Normal(  # normal prior on bias
         loc=tf.zeros([1], dtype=tf.float32),
@@ -187,27 +182,28 @@ def linear_regression2(features):
     return predictions
 
 # Joint posterior distribution
-log_joint = ed.make_log_joint_fn(linear_regression)
+log_joint = ed.make_log_joint_fn(linear_regression2)
 
 
 # Function to compute the log posterior probability
-# def target_log_prob_fn(factor_coeff_loc,factor_coeff_scale,coeffs, bias, noise_std):
+def target_log_prob_fn(factor_coeff_loc,factor_coeff_scale,coeffs, bias, noise_std):
+    return log_joint(
+        features=tf.convert_to_tensor(x, dtype=tf.float32),
+        factor_coeff_loc=factor_coeff_loc,
+        factor_coeff_scale=factor_coeff_scale,
+        coeffs=coeffs,
+        bias=bias,
+        noise_std=noise_std,
+        predictions=tf.reshape(tf.convert_to_tensor(y, dtype=tf.float32), [y.shape[0], 1]))
+
+# def target_log_prob_fn(coeffs, bias, noise_std):
 #     return log_joint(
 #         features=tf.convert_to_tensor(x, dtype=tf.float32),
-#         factor_coeff_loc=factor_coeff_loc,
-#         factor_coeff_scale=factor_coeff_scale,
 #         coeffs=coeffs,
 #         bias=bias,
 #         noise_std=noise_std,
 #         predictions=tf.reshape(tf.convert_to_tensor(y, dtype=tf.float32), [y.shape[0], 1]))
 
-def target_log_prob_fn(coeffs, bias, noise_std):
-    return log_joint(
-        features=tf.convert_to_tensor(x, dtype=tf.float32),
-        coeffs=coeffs,
-        bias=bias,
-        noise_std=noise_std,
-        predictions=tf.reshape(tf.convert_to_tensor(y, dtype=tf.float32), [y.shape[0], 1]))
 class Timer:
     def __enter__(self):
         self.t0 = time.time()
@@ -220,7 +216,7 @@ class Timer:
 num_results = int(500)  # number of hmc iterations
 n_burnin = int(250)  # number of burn-in steps
 step_size = 0.01
-num_leapfrog_steps = 10
+num_leapfrog_steps = 20
 
 D = x.shape[1]
 # Parameter sizes
@@ -239,26 +235,22 @@ states, kernel_results = tfp.mcmc.sample_chain(
     num_burnin_steps=n_burnin,
     kernel=kernel,
     current_state=[
-
+        tf.zeros(coeffs_size, name='init_factor_coeff_loc', dtype=tf.float32),
+        tf.ones(coeffs_size, name='init_factor_coeff_scale', dtype=tf.float32),
         tf.zeros(coeffs_size, name='init_coeffs', dtype=tf.float32),
         tf.zeros(bias_size, name='init_bias', dtype=tf.float32),
         tf.ones(noise_std_size, name='init_noise_std', dtype=tf.float32),
     ])
-coeffs, bias, noise_std = states
-# with Timer(), tf.Session(mygraph) as sess:
-#     [
-#         coeffs_,
-#         bias_,
-#         noise_std_,
-#         is_accepted_,
-#     ] = sess.run([
-#         coeffs,
-#         bias,
-#         noise_std,
-#         kernel_results.is_accepted,
-#     ])
+
+factor_coeff_loc,factor_coeff_scale,coeffs, bias, noise_std = states
+
+# coeffs, bias, noise_std = states
+
 
 # Samples after burn-in
+
+factor_coeff_loc_samples= factor_coeff_loc[n_burnin:, :, 0]
+factor_coeff_scale_samples= factor_coeff_scale[n_burnin:, :, 0]
 coeffs_samples = coeffs[n_burnin:, :, 0]
 bias_samples = bias[n_burnin:]
 noise_std_samples = noise_std[n_burnin:]
@@ -277,7 +269,7 @@ def post_plot(data, title='', ax=None, true=None, prc=95):
     '''Plot the posterior distribution given MCMC samples'''
     if ax is None:
         ax = plt.gca()
-    sns.kdeplot(data,shade=True, color="r", ax=ax)
+    sns.distplot(data,fit=norm,hist=True, color="r", ax=ax) #,shade=True
     tprc = (100 - prc) / 2
     ax.axvline(x=np.percentile(data, tprc), c= 'm',linestyle='-.')
     ax.axvline(x=np.percentile(data, 100 - tprc), c= 'm',linestyle='-.')
@@ -295,13 +287,14 @@ w_true=[.2,.2]
 b_true=.05
 noise_std_true=1
 # Plot chains and distributions for coefficients
-fig, axes = plt.subplots(D + 2, 2, sharex='col', sharey='col')
+fig, axes = plt.subplots(D + 2, 2, sharex='none', sharey='none')
 fig.set_size_inches(6.4, 8)
 w_names=['demand coeff','DA price coeff']
 for i in range(D):
     chain_post_plot(coeffs_samples[:, i].numpy(),
                     title=w_names[i],
                     ax=axes[i], true=w_true[i])
+
 
 # Plot chains and distributions for bias
 chain_post_plot(bias_samples[:, 0].numpy(),
@@ -314,12 +307,84 @@ chain_post_plot(noise_std_samples[:, 0].numpy(),
                 ax=axes[D + 1], true=noise_std_true)
 
 axes[D + 1][1].set_xlabel("Parameter value")
+axes[D + 1][0].set_xlabel("After Burn-in iterations")
 fig.tight_layout()
+
+# Plot chains and distributions for coefficients
+fig1, axes1 = plt.subplots(2*D, 2, sharex='none', sharey='none')
+fig1.set_size_inches(6.4, 8)
+factor_coeff_loc_names=['mu_phi_DA_demand','mu_phi_DA_price']
+factor_coeff_scale_names= ['sigma2_phi_DA_demand','sigma2_phi_DA_price']
+for i in range(D):
+    chain_post_plot(factor_coeff_loc_samples[:, i].numpy(),
+                    title=factor_coeff_loc_names[i],
+                    ax=axes1[i], true=0)
+
+for i in range(D):
+    chain_post_plot(factor_coeff_scale_samples[:, i].numpy(),
+                    title=factor_coeff_scale_names[i],
+                    ax=axes1[D+i], true=1)
+
+axes1[D + 1][1].set_xlabel("Parameter value")
+axes1[D + 1][0].set_xlabel("After Burn-in iterations")
+fig1.tight_layout()
+
+
+
+
+
+
+test_data=data['2015-12-20':'2015-12-22']
+# new_data['RT_LMP_1']=new_data.RT_LMP.shift(1)
+# new_data['DEMAND_1']=new_data.DEMAND.shift(1)
+# new_data.drop(new_data.index[0])
+from sklearn.preprocessing import MinMaxScaler
+df=MinMaxScaler(feature_range=(0,10)).fit_transform(test_data[["DA_DEMD", "DA_LMP", "RT_LMP"]].dropna())
+x_test= df[:,0:2]
+y_test=df[:,2]
+
+
+
+def ind_pred_dist(X):
+    '''Compute the prediction distribution'''
+    predictions = (np.matmul(X, coeffs_samples.numpy().transpose()) +
+                   bias_samples[:, 0])
+    noise = (noise_std_samples[:, 0] *
+             np.random.randn(noise_std_samples.numpy().shape[0]))
+    return predictions + noise
+
+N_val=x_test.shape[0]
+
+# Compute prediction distribution for all validation samples
+Nmcmc = coeffs_samples.shape[0]
+prediction_distribution = np.zeros((N_val, Nmcmc))
+for i in range(N_val):
+    prediction_distribution[i, :] = ind_pred_dist(x_test[i, :])
+
+# Plot random datapoints and their prediction intervals
+def plot_output(m):
+    fig3, axes3 = plt.subplots(5, 3, sharex='none', sharey='none')
+    fig3.set_size_inches(6.4, 8)
+    for i in range(5):
+        for j in range(3):
+            ix = i * 3 + j
+            pred_dist = prediction_distribution[m - ix - 1, :]
+            sns.distplot(pred_dist, fit=norm, hist=True, color="r", ax=axes3[i][j])
+            # sns.kdeplot(pred_dist, shade=True, ax=axes3[i][j])
+            axes3[i][j].axvline(x=y_test[ix])
+
+    axes3[4][0].set_ylabel('p(RT price| (DA price,DA demand))')
+    axes3[1][0].set_ylabel('p(RT price| (DA price,DA demand))')
+    axes3[4][0].set_xlabel('RT price')
+    axes3[4][1].set_xlabel('RT price')
+    axes3[4][2].set_xlabel('RT price')
+    plt.show()
+
+plot_output(N_val)
+
 plt.show()
 
 a=1
-
-
 
 
 
